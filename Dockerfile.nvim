@@ -1,0 +1,47 @@
+FROM alpine:3.22 AS builder
+
+# Build dependencies for Neovim
+RUN apk add --no-cache \
+    build-base \
+    cmake \
+    ninja \
+    curl \
+    unzip \
+    gperf \
+    libtool \
+    autoconf \
+    automake \
+    m4 \
+    pkgconfig \
+    gettext-tiny-dev \
+    lua5.1-dev \
+    libuv-dev \
+    msgpack-c-dev \
+    tree-sitter-dev \
+    unibilium-dev \
+    libtermkey-dev \
+    libvterm-dev \
+    lua5.1-bitop \
+    lua5.1-lpeg \
+    lua5.1-mpack \
+    lua5.1-filesystem \
+    git \
+    bash
+
+WORKDIR /src
+ARG NVIM_VERSION=0.10.2
+
+# Download Neovim source
+RUN curl -L -o nvim.tar.gz https://github.com/neovim/neovim/archive/refs/tags/v${NVIM_VERSION}.tar.gz \
+    && tar -xzf nvim.tar.gz \
+    && rm nvim.tar.gz
+
+WORKDIR /src/neovim-${NVIM_VERSION}
+
+# Build + install into /nvim
+RUN make -j$(nproc) CMAKE_BUILD_TYPE=Release CMAKE_INSTALL_PREFIX=/nvim install
+
+# Export stage
+FROM scratch AS export
+COPY --from=builder /nvim /nvim
+CMD ["/nvim/bin/nvim"]

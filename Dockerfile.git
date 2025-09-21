@@ -1,0 +1,45 @@
+FROM alpine:3.22 AS builder
+
+# Build dependencies + static libs + autotools
+RUN apk add --no-cache \
+    build-base \
+    autoconf \
+    automake \
+    libtool \
+    musl-dev \
+    zlib-dev \
+    zlib-static \
+    curl-dev \
+    curl-static \
+    expat-dev \
+    expat-static \
+    openssl-dev \
+    openssl-libs-static \
+    gettext-tiny-dev \
+    wget \
+    tar \
+    perl \
+    bash
+
+ARG GIT_VERSION=2.51.0
+WORKDIR /src
+
+# Download Git source from GitHub (snapshot tag)
+RUN wget -O git.tar.gz https://github.com/git/git/archive/refs/tags/v${GIT_VERSION}.tar.gz \
+    && tar -xzf git.tar.gz \
+    && rm git.tar.gz
+
+WORKDIR /src/git-${GIT_VERSION}
+
+# Regenerate configure script, then build with HTTPS support
+ARG CPUS=1
+RUN make configure \
+    && ./configure --without-tcltk --with-curl --with-openssl \
+        CFLAGS="-static -O2" LDFLAGS="-static" \
+    && make -j${CPUS} \
+    && make install DESTDIR=/out prefix=/usr
+
+# Export stage
+FROM scratch AS export
+COPY --from=builder /out/usr/bin/ /usr/bin/
+CMD ["/usr/bin/git"]
