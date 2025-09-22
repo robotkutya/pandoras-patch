@@ -1,46 +1,72 @@
-FROM base-builder:bookworm AS builder
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE} AS builder
 
-# Build dependencies for Git
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    autoconf automake libtool \
-    gettext \
-    tar \
-    perl \
-    zlib1g-dev \
-    libcurl4-openssl-dev \
-    libexpat1-dev \
-    libssl-dev \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
-
-ARG GIT_VERSION
-WORKDIR /src
-
-# Download Git source
-RUN curl -LO https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.gz \
-    && tar -xzf git-${GIT_VERSION}.tar.gz && rm git-${GIT_VERSION}.tar.gz
-
-# Build and install into /tmp/AppDir
-RUN cd git-${GIT_VERSION} \
-    && make configure \
-    && ./configure --prefix=/usr --with-openssl --with-curl \
-    && make -j$(nproc) \
-    && make install DESTDIR=/tmp/AppDir
-
-# Minimal desktop entry (linuxdeploy needs it)
-RUN mkdir -p /tmp/AppDir/usr/share/applications \
- && echo "[Desktop Entry]\nType=Application\nName=Git\nExec=git\nIcon=git\nCategories=Development;" \
-    > /tmp/AppDir/usr/share/applications/git.desktop
-
-# Get linuxdeploy + appimagetool
-WORKDIR /tools
-RUN curl -Lo linuxdeploy-x86_64.AppImage https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
-    && chmod +x linuxdeploy-x86_64.AppImage
-
-# Build AppImage, then extract it directly
 WORKDIR /tmp
-RUN /tools/linuxdeploy-x86_64.AppImage --appdir /tmp/AppDir --output appimage \
-    && ./Git*.AppImage --appimage-extract \
-    && mv squashfs-root /git \
-    && rm -f Git*.AppImage
+
+# Install dpkg + apt-utils to allow apt-get download
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      dpkg-dev apt-utils && \
+    rm -rf /var/lib/apt/lists/*
+
+# Download prebuilt git package for this distro
+RUN apt-get update && apt-get download git
+
+# Extract package
+RUN mkdir /out && dpkg -x git_*.deb /out
+
+WORKDIR /git
+
+# Copy main binary
+RUN cp /out/usr/bin/git ./git.real
+
+# Write Git-specific wrapper (sets env before executing)
+RUN printf '%s\n' \
+  '#!/bin/bash' \
+  'set -euo pipefail' \
+  'WRAPPER_PATH="$(readlink -f "$0")"' \
+  'DIR="$(dirname "$WRAPPER_PATH")"' \
+  'RUNTIME="$HOME/.local/runtime"' \
+  'APPNAME="$(basename "$WRAPPER_PATH")"' \
+  'export GIT_EXEC_PATH="$DIR/libexec/git-core"' \
+  'export GIT_TEMPLATE_DIR="$DIR/share/git-core/templates"' \
+  'exec "$RUNTIME/ld-linux-x86-64.so.2" --library-path "$RUNTIME" "$DIR/${APPNAME}.real" "$@"' \
+  > ./git && chmod +x ./git
+
+# Copy templates
+RUN mkdir -p ./share/git-core/templates && \
+    if [ -d /out/usr/share/git-core/templates ]; then \
+        cp -r /out/usr/share/git-core/templates/* ./share/git-core/templates/; \
+    fi
+
+# Copy all git-remote-* helpers
+RUN mkdir -p ./libexec/git-core && \
+    for dir in /out/usr/lib/git-core /out/usr/libexec/git-core; do \
+      if [ -d "$dir" ]; then \
+        cp -v "$dir"/git-remote-* ./libexec/git-core/ || true; \
+      fi; \
+    done
+
+# Wrap each git-remote-* helper with Git bubble wrapper
+RUN for helper in ./libexec/git-core/git-remote-*; do \
+      if [ -f "$helper" ]; then \
+        mv "$helper" "$helper.real" && \
+        printf '%s\n' \
+          '#!/bin/bash' \
+          'set -euo pipefail' \
+          'WRAPPER_PATH="$(readlink -f "$0")"' \
+          'DIR="$(dirname "$WRAPPER_PATH")"' \
+          'RUNTIME="$HOME/.local/runtime"' \
+          'APPNAME="$(basename "$WRAPPER_PATH")"' \
+          'export GIT_EXEC_PATH="$DIR"' \
+          'export GIT_TEMPLATE_DIR="$(dirname "$DIR")/share/git-core/templates"' \
+          'exec "$RUNTIME/ld-linux-x86-64.so.2" --library-path "$RUNTIME" "$DIR/${APPNAME}.real" "$@"' \
+          > "$helper" && chmod +x "$helper"; \
+      fi; \
+    done
+
+# Strip binaries
+RUN strip ./git.real ./libexec/git-core/*.real || true
+
+# Symlink installer
+COPY setup-symlink-git.sh /git/setup-symlink-git.sh
+RUN chmod +x /git/setup-symlink-git.sh

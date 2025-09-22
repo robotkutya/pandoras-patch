@@ -1,6 +1,60 @@
-FROM debian:bookworm-slim
+# Dockerfile.base
+ARG BASE_DISTRO=debian:bookworm-slim
+FROM ${BASE_DISTRO}
 
+# Install basic tooling + runtime libs
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl xz-utils fuse squashfs-tools ca-certificates \
+    libc6 libstdc++6 libgcc-s1 \
  && update-ca-certificates \
  && rm -rf /var/lib/apt/lists/*
+
+
+# Build runtime bubble
+RUN mkdir -p /runtime && \
+    \
+    # --- Core runtime loader ---
+    cp -v /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 /runtime/ && \
+    \
+    # --- GNU C library (glibc core) ---
+    cp -v /lib/x86_64-linux-gnu/libc.so.6       /runtime/ && \
+    cp -v /lib/x86_64-linux-gnu/libm.so.6       /runtime/ && \
+    cp -v /lib/x86_64-linux-gnu/libpthread.so.0 /runtime/ && \
+    cp -v /lib/x86_64-linux-gnu/libdl.so.2      /runtime/ && \
+    cp -v /lib/x86_64-linux-gnu/librt.so.1      /runtime/ && \
+    \
+    # --- GCC runtime support ---
+    cp -v /lib/x86_64-linux-gnu/libgcc_s.so.1      /runtime/ && \
+    cp -v /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /runtime/ && \
+    \
+    # --- Name service switch (DNS, /etc/hosts lookups) ---
+    (cp -v /lib/x86_64-linux-gnu/libnss_dns.so.2   /runtime/ || true) && \
+    (cp -v /lib/x86_64-linux-gnu/libnss_files.so.2 /runtime/ || true) && \
+    \
+    # --- Text/regex processing (Git regex backend) ---
+    (cp -v /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0 /runtime/ || true) && \
+    \
+    # --- Compression ---
+    (cp -v /lib/x86_64-linux-gnu/libz.so.1    /runtime/ || true) && \
+    (cp -v /lib/x86_64-linux-gnu/libzstd.so.1 /runtime/ || true) && \
+    \
+    # --- Networking / HTTPS stack (curl+openssl, needed by git-remote-https) ---
+    (cp -v /usr/lib/x86_64-linux-gnu/libcurl.so.4   /runtime/ || true) && \
+    (cp -v /usr/lib/x86_64-linux-gnu/libssl.so.3    /runtime/ || true) && \
+    (cp -v /usr/lib/x86_64-linux-gnu/libcrypto.so.3 /runtime/ || true) && \
+    \
+    # --- Misc / Application-specific (Git deps via libcurl) ---
+    (cp -v /lib/x86_64-linux-gnu/libidn2.so.0     /runtime/ || true) && \
+    (cp -v /lib/x86_64-linux-gnu/libunistring.so.2 /runtime/ || true)
+
+# Shared wrapper template, symlink-safe using readlink -f
+RUN mkdir -p /wrap-template && \
+    printf '%s\n' \
+  '#!/bin/bash' \
+  'set -euo pipefail' \
+  'WRAPPER_PATH="$(readlink -f "$0")"' \
+  'DIR="$(dirname "$WRAPPER_PATH")"' \
+  'RUNTIME="$HOME/.local/runtime"' \
+  'APPNAME="$(basename "$WRAPPER_PATH")"' \
+  'exec "$RUNTIME/ld-linux-x86-64.so.2" --library-path "$RUNTIME" "$DIR/${APPNAME}.real" "$@"' \
+  > /wrap-template/wrapper.sh && chmod +x /wrap-template/wrapper.sh

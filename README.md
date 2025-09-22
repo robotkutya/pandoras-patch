@@ -1,2 +1,2 @@
 # Pandora's Patch
-Build apps for ELTE's `szamrend.inf.elte.hu` server that can be used when you `ssh` into it.
+Patch up the holes in ELTE's `szamrend.inf.elte.hu` server – build modern versions of essential apps that run on the old Debian Stretch box.
