@@ -1,45 +1,46 @@
-FROM alpine:3.22 AS builder
+FROM base-builder:bookworm AS builder
 
-# Build dependencies + static libs + autotools
-RUN apk add --no-cache \
-    build-base \
-    autoconf \
-    automake \
-    libtool \
-    musl-dev \
-    zlib-dev \
-    zlib-static \
-    curl-dev \
-    curl-static \
-    expat-dev \
-    expat-static \
-    openssl-dev \
-    openssl-libs-static \
-    gettext-tiny-dev \
-    wget \
+# Build dependencies for Git
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    autoconf automake libtool \
+    gettext \
     tar \
     perl \
-    bash
+    zlib1g-dev \
+    libcurl4-openssl-dev \
+    libexpat1-dev \
+    libssl-dev \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
 
-ARG GIT_VERSION=2.51.0
+ARG GIT_VERSION
 WORKDIR /src
 
-# Download Git source from GitHub (snapshot tag)
-RUN wget -O git.tar.gz https://github.com/git/git/archive/refs/tags/v${GIT_VERSION}.tar.gz \
-    && tar -xzf git.tar.gz \
-    && rm git.tar.gz
+# Download Git source
+RUN curl -LO https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.gz \
+    && tar -xzf git-${GIT_VERSION}.tar.gz && rm git-${GIT_VERSION}.tar.gz
 
-WORKDIR /src/git-${GIT_VERSION}
+# Build and install into /tmp/AppDir
+RUN cd git-${GIT_VERSION} \
+    && make configure \
+    && ./configure --prefix=/usr --with-openssl --with-curl \
+    && make -j$(nproc) \
+    && make install DESTDIR=/tmp/AppDir
 
-# Regenerate configure script, then build with HTTPS support
-ARG CPUS=1
-RUN make configure \
-    && ./configure --without-tcltk --with-curl --with-openssl \
-        CFLAGS="-static -O2" LDFLAGS="-static" \
-    && make -j${CPUS} \
-    && make install DESTDIR=/out prefix=/usr
+# Minimal desktop entry (linuxdeploy needs it)
+RUN mkdir -p /tmp/AppDir/usr/share/applications \
+ && echo "[Desktop Entry]\nType=Application\nName=Git\nExec=git\nIcon=git\nCategories=Development;" \
+    > /tmp/AppDir/usr/share/applications/git.desktop
 
-# Export stage
-FROM scratch AS export
-COPY --from=builder /out/usr/bin/ /usr/bin/
-CMD ["/usr/bin/git"]
+# Get linuxdeploy + appimagetool
+WORKDIR /tools
+RUN curl -Lo linuxdeploy-x86_64.AppImage https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
+    && chmod +x linuxdeploy-x86_64.AppImage
+
+# Build AppImage, then extract it directly
+WORKDIR /tmp
+RUN /tools/linuxdeploy-x86_64.AppImage --appdir /tmp/AppDir --output appimage \
+    && ./Git*.AppImage --appimage-extract \
+    && mv squashfs-root /git \
+    && rm -f Git*.AppImage
